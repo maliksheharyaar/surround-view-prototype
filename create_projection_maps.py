@@ -94,15 +94,20 @@ class InteractiveProjectionMapper:
         Raises:
             FileNotFoundError: If test image cannot be loaded
         """
-        image_path = self.camera_config.test_image
-        
+        image_path = f"images/{self.camera_config.name}/1851.png"
+
         if not Path(image_path).exists():
-            raise FileNotFoundError(f"Test image not found: {image_path}")
-        
-        image = cv2.imread(image_path)
+            # Fallback to old naming scheme for compatibility
+            fallback_path = self.camera_config.test_image
+            if Path(fallback_path).exists():
+                image_path = fallback_path
+            else:
+                raise FileNotFoundError(f"Test image not found: {image_path} (and fallback {fallback_path} not found)")
+
+        image = cv2.imread(str(image_path))
         if image is None:
-            raise FileNotFoundError(f"Cannot read image: {image_path}")
-        
+            raise IOError(f"Cannot read image: {image_path}")
+
         print(f"✓ Loaded test image: {image_path}")
         return image
     
