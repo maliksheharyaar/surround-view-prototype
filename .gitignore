@@ -1,0 +1,21 @@
+# Virtual Environment
+venv/
+/venv/
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDE files
+.idea/
+
+# Test files
+test.jpg
+test.py
+test.txt
+
+# Benchmark results
+gpu_benchmark_results.json 

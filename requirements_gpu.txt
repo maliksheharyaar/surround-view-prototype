@@ -1,0 +1,23 @@
+# 360° Surround View System - GPU Optimized Requirements
+# =====================================================
+
+# Core OpenCV for computer vision
+opencv-python>=4.8.0
+
+# GUI framework for calibration interface
+PyQt5
+
+# Numerical computing and array operations
+numpy>=1.19.0
+
+# Image processing and manipulation
+Pillow>=8.0.0
+
+# YAML configuration file support
+PyYAML>=5.4.0
+
+# System monitoring and memory profiling
+psutil>=5.8.0
+
+# Optional: GPU acceleration (requires separate CUDA installation)
+# opencv-contrib-python  # Include if GPU/CUDA support needed 
