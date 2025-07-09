@@ -26,30 +26,54 @@ pip install -r requirements_gpu.txt
 
 ### 2. Usage
 
-The system requires a two-step process to generate the surround view:
+**Quick Run (with pre-calibrated settings)**
 
-**Step 1: Create Projection Maps**
-
-This step generates the bird's-eye view transformation for each camera. You will need to run this command for each of the four cameras (`front`, `back`, `left`, `right`).
-
-An interactive window will open where you need to select four calibration points on the ground.
+If you want to run the project immediately using the existing pre-calibrated camera settings, you can skip the calibration step and directly generate the surround view image by running:
 
 ```bash
-python create_projection_maps.py --camera front
+python generate_blend_weights.py
 ```
+
+This will use the projection matrices already present in the `yaml/` directory to create the final stitched image. The result will be saved as `surround_view_result.jpg`.
+
+**Full Calibration and Generation**
+
+For custom calibration, the system requires a two-step process:
+
+**Step 1: Create Projection Maps (Calibration)**
+
+This is the most critical step. It generates the bird's-eye view transformation for each camera. You must run this command for each of the four cameras (`front`, `back`, `left`, `right`).
+
+**Command Examples:**
+```bash
+# Calibrate the front camera with default settings
+python create_projection_maps.py --camera front
+
+# Calibrate the back camera, adjusting image scale and position for better visibility
+python create_projection_maps.py --camera back --scale 0.8 0.8 --shift -100 -50
+```
+
+**How to Select Anchor Points:**
+
+The interactive tool will show you the undistorted camera view. For an accurate projection, you need to select four points on the ground that form a rectangle in the real world.
+
+*   **Best Practice:** Use a calibration mat with a grid pattern on the ground. Click the four corner points of a known rectangle on this mat.
+*   **Order Matters:** Click the points in order: top-left, top-right, bottom-left, bottom-right relative to the rectangle on the ground.
+*   **Tip:** If you don't have a mat, use any clearly visible rectangular object (like a large piece of cardboard) or markings on the ground. Precision is key to a good result.
 
 **Interactive Calibration Instructions:**
 1.  A window will show the undistorted image from the camera.
-2.  Click on four points on the ground in the image to define the projection area.
-3.  If you make a mistake, right-click or press 'd' to remove the last point.
-4.  Press `Enter` to confirm the points.
-5.  A preview of the bird's-eye view will be shown. Press `Enter` to save the projection map or `q` to quit without saving.
+2.  Click on the four anchor points on the ground as described above.
+3.  To remove the last point, right-click or press the 'd' key.
+4.  Press `Enter` to confirm the four points.
+5.  A preview of the projected bird's-eye view will be displayed. Verify that it looks flat and rectangular.
+6.  Press `Enter` again to save the projection map to the corresponding `yaml/[camera_name].yaml` file. Press `q` to quit without saving.
 
 Repeat this process for all four cameras.
 
 **Step 2: Generate Blending Weights and Final Image**
 
-Once all projection maps are created, run the following command to generate the final stitched surround view image.
+Once all projection maps are created (or if you are using the pre-calibrated ones), run the following command to generate the final stitched surround view image:
 
 ```bash
 python generate_blend_weights.py
