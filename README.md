@@ -31,7 +31,7 @@ pip install -r requirements_gpu.txt
 If you want to run the project immediately using the existing pre-calibrated camera settings, you can skip the calibration step and directly generate the surround view image by running:
 
 ```bash
-python generate_blend_weights.py
+python generate_blend_weights.py --duration 15
 ```
 
 This will use the projection matrices already present in the `yaml/` directory to create the final stitched image. The result will be saved as `surround_view_result.jpg`.
@@ -71,22 +71,32 @@ The interactive tool will show you the undistorted camera view. For an accurate 
 
 Repeat this process for all four cameras.
 
-**Step 2: Generate Blending Weights and Final Image**
+**Step 2: Run the Real-Time Surround View Stream**
 
-Once all projection maps are created (or if you are using the pre-calibrated ones), run the following command to generate the final stitched surround view image:
+Once all projection maps are created (or if you are using the pre-calibrated ones), run the following command to start the real-time surround view stream. The script will stitch the camera feeds together and display them in a live window.
+
+**Command-line Parameters:**
+
+*   `--fps [number]`: Sets the target frames per second for the stream. Default is `10`.
+*   `--duration [seconds]`: Specifies how long the stream should run. Default is `30` seconds.
+*   `--buffer-size [number]`: The size of the frame buffer for smoother streaming. Default is `10`.
+
+**Command Examples:**
 
 ```bash
-python generate_blend_weights.py
+# Run the stream for 60 seconds at 20 FPS
+python generate_blend_weights.py --duration 60 --fps 20
+
+# Run with a larger buffer for potentially smoother video
+python generate_blend_weights.py --buffer-size 20
 ```
 
 This script will:
 1.  Load the camera calibrations and projection maps.
-2.  Process and warp the images from each camera.
+2.  Continuously process and warp the image sequences from each camera.
 3.  Calculate blending weights for the overlapping regions to create a seamless image.
-4.  Apply color correction.
-5.  Stitch all views together and save the final image as `surround_view_result.jpg`.
-
-You can use the `--no-preview` flag to run the script without displaying intermediate windows.
+4.  Apply color correction in real-time.
+5.  Display the live stitched view in a window.
 
 ## Project Structure
 
