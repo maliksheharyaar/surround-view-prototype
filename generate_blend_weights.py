@@ -647,32 +647,47 @@ class RealTimeStreamProcessor:
                 "",
                 "Press 'Q' or ESC to stop streaming"
             ]
+
+            # Define font properties
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.5
+            font_thickness = 1
+            padding = 15
+
+            # Get text size to determine line height and position
+            (text_w, text_h), baseline = cv2.getTextSize("M", font, font_scale, font_thickness)
+            line_height = text_h + baseline + 8  # Add extra vertical padding
+
+            # Dynamically calculate overlay width based on text
+            max_text_width = 0
+            for line in lines:
+                if not line: continue
+                (text_width, _), _ = cv2.getTextSize(line, font, font_scale, font_thickness)
+                if text_width > max_text_width:
+                    max_text_width = text_width
             
-            # Enhanced overlay dimensions
-            overlay_width = 650  # Increased from ~500
-            line_height = 28     # Increased spacing between lines
-            padding = 25         # More padding
-            overlay_height = padding + len(lines) * line_height + padding
-            
+            overlay_width = max_text_width + padding * 2
+            overlay_height = (len(lines) * line_height) + padding
+
             # Create semi-transparent background
             overlay = image.copy()
-            cv2.rectangle(overlay, (15, 15), (overlay_width, overlay_height), (0, 0, 0), -1)
-            cv2.addWeighted(overlay, 0.8, image, 0.2, 0, image)
+            cv2.rectangle(overlay, (10, 10), (10 + overlay_width, 10 + overlay_height), (0, 0, 0), -1)
+            cv2.addWeighted(overlay, 0.7, image, 0.3, 0, image)
             
             # Add border for better definition
-            cv2.rectangle(image, (15, 15), (overlay_width, overlay_height), (0, 255, 0), 3)
-            
+            cv2.rectangle(image, (10, 10), (10 + overlay_width, 10 + overlay_height), (0, 255, 0), 2)
+
             # Draw performance text with better spacing
             for i, line in enumerate(lines):
-                y = 45 + i * line_height  # Start lower with more spacing
-                if y > image.shape[0] - 50:  # More bottom margin
+                y = 10 + padding + text_h + (i * line_height)
+                if y > image.shape[0] - padding:
                     break
-                
+
                 # Enhanced color coding
                 if "FPS:" in line:
                     color = (0, 255, 0) if current_fps >= self.target_fps * 0.8 else (0, 255, 255)
                 elif "Dropped" in line and self.dropped_frames > 0:
-                    color = (0, 255, 255)  # Yellow for dropped frames
+                    color = (0, 255, 255)
                 elif "CPU Load:" in line:
                     color = (0, 255, 255) if cpu_percent > 80 else (0, 255, 0)
                 elif "RAM:" in line:
@@ -684,17 +699,16 @@ class RealTimeStreamProcessor:
                 elif "Temperature:" in line:
                     color = (0, 255, 255) if detailed_gpu_info['temperature'] > 80 else (0, 255, 0)
                 elif "360° Surround View" in line:
-                    color = (0, 255, 0)  # Green for title
+                    color = (0, 255, 0)
                 elif "GPU Note:" in line:
-                    color = (0, 255, 255)  # Cyan for informational
+                    color = (0, 255, 255)
                 elif line == "":
-                    continue  # Skip empty lines
+                    continue
                 else:
                     color = (255, 255, 255)
                  
-                # Use larger font for better readability
-                cv2.putText(image, line, (30, y),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 2)
+                cv2.putText(image, line, (10 + padding, y),
+                            font, font_scale, color, font_thickness)
             
         except Exception as e:
             print(f"⚠️  Performance overlay failed: {e}")
@@ -751,7 +765,7 @@ class RealTimeStreamProcessor:
         Args:
             duration: Optional duration in seconds (None for infinite)
         """
-        print(f"🚀 Starting real-time 360° surround view streaming at {self.target_fps} FPS")
+        print(f"�� Starting real-time 360° surround view streaming at {self.target_fps} FPS")
         print("   Press 'Q' or ESC in the display window to stop")
         
         self.is_streaming = True
@@ -1617,20 +1631,33 @@ class GPUStreamProcessor(RealTimeStreamProcessor):
                 f"VRAM Usage: {detailed_gpu_info.get('memory_percent', 0.0):.1f}%",
                 f"RAM Usage: {memory.percent:.1f}%"
             ]
-            
-            # Overlay dimensions
-            overlay_width = 300
-            line_height = 30
-            padding = 15
-            overlay_height = padding * 2 + len(lines) * line_height
 
+            # Define font properties
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.5
+            font_thickness = 1
+            padding = 15
+
+            # Get text size to determine line height and position
+            (text_w, text_h), baseline = cv2.getTextSize("M", font, font_scale, font_thickness)
+            line_height = text_h + baseline + 8  # Add extra vertical padding
+
+            # Dynamically calculate overlay width
+            max_text_width = 0
+            for line in lines:
+                (text_width, _), _ = cv2.getTextSize(line, font, font_scale, font_thickness)
+                if text_width > max_text_width:
+                    max_text_width = text_width
+            
+            overlay_width = max_text_width + padding * 2
+            overlay_height = (len(lines) * line_height) + padding
+            
             # Ensure overlay doesn't exceed image boundaries
             img_h, img_w = image.shape[:2]
             if overlay_width > img_w - 20:
                 overlay_width = img_w - 20
             if overlay_height > img_h - 20:
-                line_height = max(20, (img_h - 20 - 2 * padding) // len(lines))
-                overlay_height = padding * 2 + len(lines) * line_height
+                overlay_height = img_h - 20
             
             # Create semi-transparent background
             overlay = image.copy()
@@ -1642,10 +1669,9 @@ class GPUStreamProcessor(RealTimeStreamProcessor):
             cv2.rectangle(image, (10, 10), (10 + overlay_width, 10 + overlay_height), border_color, 2)
             
             # Draw performance text
-            y_offset = 10 + padding + 10
-            for line in lines:
-                y = y_offset
-                if y > img_h - 10:
+            for i, line in enumerate(lines):
+                y = 10 + padding + text_h + (i * line_height)
+                if y > 10 + overlay_height - padding:
                     break
                 
                 color = (255, 255, 255)
@@ -1655,9 +1681,7 @@ class GPUStreamProcessor(RealTimeStreamProcessor):
                     color = (0, 255, 255)
 
                 cv2.putText(image, line, (10 + padding, y),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 1)
-                
-                y_offset += line_height
+                            font, font_scale, color, font_thickness)
 
         except Exception as e:
             print(f"⚠️  Performance overlay failed: {e}")
