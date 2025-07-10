@@ -1102,13 +1102,6 @@ class GPUStreamProcessor(RealTimeStreamProcessor):
         self.frame_skip_counter = 0
         self.frame_skip_interval = max(1, target_fps // 10)  # Process every Nth frame for high FPS
         
-        # Batch processing optimization (Stack Overflow reference)
-        self.batch_size = 4  # Process 4 camera images in one batch
-        self.gpu_memory_pool = {}  # Persistent GPU memory buffers
-        self.opencl_context = None
-        self.opencl_queue = None
-        self.gpu_buffers_initialized = False
-        
         # Call parent initialization
         super().__init__(target_fps, max_buffer_size)
         
@@ -1126,64 +1119,11 @@ class GPUStreamProcessor(RealTimeStreamProcessor):
         self.use_fast_mode = True  # Enable fast processing mode
         self.quality_level = 0.8   # Increased quality for GPU batch processing
         
-        # Initialize batch GPU processing
-        self._initialize_batch_gpu_processing()
-        
         print(f"🎯 GPU Stream Processor initialized with target FPS: {target_fps}")
         print(f"📊 OpenCL GPU: {'✅ AVAILABLE' if OPENCL_GPU_AVAILABLE else '❌ NOT AVAILABLE'}")
         print(f"🚀 Fast mode: {'✅ ENABLED' if self.use_fast_mode else '❌ DISABLED'}")
         print(f"📊 Buffer size: {self.max_buffer_size}")
         print(f"🎨 Quality level: {self.quality_level * 100:.0f}%")
-        print(f"🔄 Batch size: {self.batch_size} images per GPU operation")
-
-    def _initialize_batch_gpu_processing(self):
-        """Initialize persistent GPU memory buffers for batch processing."""
-        if not OPENCL_GPU_AVAILABLE:
-            return
-        
-        try:
-            # Initialize OpenCL context and command queue for batch processing
-            print("🔧 Initializing batch GPU processing...")
-            
-            # Estimate image dimensions (will be updated with actual images)
-            estimated_height, estimated_width = 480, 640
-            
-            # Pre-allocate GPU memory buffers for batch processing
-            # These buffers will persist across all frames to minimize allocation overhead
-            self.gpu_memory_pool = {
-                'input_buffers': [],    # Input image buffers
-                'output_buffers': [],   # Output image buffers  
-                'temp_buffers': [],     # Temporary processing buffers
-                'batch_buffer': None    # Large buffer for batch operations
-            }
-            
-            # Create UMat buffers for batch operations
-            batch_size = self.batch_size
-            for i in range(batch_size):
-                # Create empty persistent buffers (will be resized as needed)
-                input_buffer = cv2.UMat()
-                self.gpu_memory_pool['input_buffers'].append(input_buffer)
-                
-                # Create empty persistent output buffer
-                output_buffer = cv2.UMat()
-                self.gpu_memory_pool['output_buffers'].append(output_buffer)
-                
-                # Create empty temporary buffer for intermediate operations
-                temp_buffer = cv2.UMat()
-                self.gpu_memory_pool['temp_buffers'].append(temp_buffer)
-            
-            # Create empty batch buffer for combined operations (will be created as needed)
-            self.gpu_memory_pool['batch_buffer'] = cv2.UMat()
-            
-            self.gpu_buffers_initialized = True
-            print("✅ Batch GPU memory buffers initialized successfully")
-            print(f"   📊 Allocated {batch_size} persistent GPU buffers")
-            print(f"   🎯 Batch processing: {batch_size} images per GPU operation")
-            print(f"   🔧 Buffers will be dynamically resized as needed")
-            
-        except Exception as e:
-            print(f"⚠️  Batch GPU initialization failed: {e}")
-            self.gpu_buffers_initialized = False
 
     def _load_cameras(self) -> None:
         """Load cameras and initialize OpenCL processor."""
@@ -1198,99 +1138,8 @@ class GPUStreamProcessor(RealTimeStreamProcessor):
         else:
             print("⚠️  No cameras loaded or OpenCL not available, using CPU processor")
 
-    def _batch_process_images_gpu(self, images: List[np.ndarray]) -> List[np.ndarray]:
-        """Process multiple images in a single GPU batch operation (simplified approach)."""
-        if not OPENCL_GPU_AVAILABLE or not self.gpu_buffers_initialized:
-            return images
-        
-        try:
-            start_time = time.time()
-            
-            # Simplified batch processing: Upload all images to GPU and process them
-            processed_images = []
-            
-            for img in images:
-                if img is None or img.size == 0:
-                    processed_images.append(img)
-                    continue
-                
-                # Upload to GPU and perform multiple operations without downloading
-                gpu_img = cv2.UMat(img)
-                
-                # Batch operations on GPU
-                # Operation 1: Gaussian blur
-                blurred = cv2.GaussianBlur(gpu_img, (5, 5), 1.0)
-                
-                # Operation 2: Subtle enhancement (every other frame)
-                if self.frame_counter % 2 == 0:
-                    # Simple sharpening kernel
-                    kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
-                    enhanced = cv2.filter2D(blurred, -1, kernel)
-                else:
-                    enhanced = blurred
-                
-                # Operation 3: Minor color adjustment
-                enhanced = cv2.convertScaleAbs(enhanced, alpha=1.05, beta=2)
-                
-                # Download result only once after all operations
-                result = enhanced.get()
-                processed_images.append(result)
-            
-            processing_time = (time.time() - start_time) * 1000
-            
-            # Log performance occasionally
-            if self.frame_counter % 10 == 0:
-                print(f"🚀 Batch GPU processing: {processing_time:.1f}ms for {len(processed_images)} images")
-            
-            return processed_images
-            
-        except Exception as e:
-            print(f"⚠️  Batch GPU processing failed: {e}")
-            return images
-
-    def _create_batch_display(self, images: List[np.ndarray]) -> np.ndarray:
-        """Create optimized display using GPU operations (simplified approach)."""
-        if not OPENCL_GPU_AVAILABLE or not self.gpu_buffers_initialized or len(images) < 4:
-            return self._fast_stitch_images(images)
-        
-        try:
-            # Simplified batch display creation on GPU
-            front, back, left, right = images[:4]
-            
-            # Resize images for display
-            target_height = int(240 * self.quality_level)
-            target_width = int(320 * self.quality_level)
-            
-            # Process all resizing on GPU in one batch
-            gpu_left = cv2.resize(cv2.UMat(left), (target_width, target_height))
-            gpu_front = cv2.resize(cv2.UMat(front), (target_width, target_height))
-            gpu_back = cv2.resize(cv2.UMat(back), (target_width, target_height))
-            gpu_right = cv2.resize(cv2.UMat(right), (target_width, target_height))
-            
-            # Create combined image on GPU
-            # Create top and bottom rows on GPU
-            top_row = cv2.hconcat([gpu_left, gpu_front])
-            bottom_row = cv2.hconcat([gpu_back, gpu_right])
-            
-            # Combine rows on GPU
-            combined = cv2.vconcat([top_row, bottom_row])
-            
-            # Final resize on GPU
-            output_width = int(640 * self.quality_level)
-            output_height = int(480 * self.quality_level)
-            final_gpu = cv2.resize(combined, (output_width, output_height))
-            
-            # Download final result only once
-            result = final_gpu.get()
-            
-            return result
-            
-        except Exception as e:
-            print(f"⚠️  Batch display creation failed: {e}")
-            return self._fast_stitch_images(images)
-
     def _process_frame_async(self, frame_data: FrameData) -> FrameData:
-        """Process a single frame asynchronously with batch GPU optimization."""
+        """Process a single frame asynchronously with GPU optimization."""
         try:
             start_time = time.time()
             
@@ -1299,15 +1148,7 @@ class GPUStreamProcessor(RealTimeStreamProcessor):
                 return frame_data
             
             # Use batch GPU processing for camera processing
-            if OPENCL_GPU_AVAILABLE and self.gpu_buffers_initialized:
-                # Extract images for batch processing
-                images = [
-                    frame_data.camera_images.get('front'),
-                    frame_data.camera_images.get('back'), 
-                    frame_data.camera_images.get('left'),
-                    frame_data.camera_images.get('right')
-                ]
-                
+            if OPENCL_GPU_AVAILABLE:
                 # Process camera images in parallel with GPU acceleration
                 with ThreadPoolExecutor(max_workers=4) as executor:
                     # Submit camera processing tasks
@@ -1362,8 +1203,8 @@ class GPUStreamProcessor(RealTimeStreamProcessor):
             
             # Log batch processing performance occasionally
             if self.frame_counter % 15 == 0:
-                batch_status = "GPU-Batch" if (OPENCL_GPU_AVAILABLE and self.gpu_buffers_initialized) else "CPU"
-                print(f"🎯 Frame {frame_data.frame_id}: {batch_status} processing in {processing_time:.1f}ms")
+                status = "GPU" if OPENCL_GPU_AVAILABLE else "CPU"
+                print(f"🎯 Frame {frame_data.frame_id}: {status} processing in {processing_time:.1f}ms")
             
             return frame_data
             
@@ -1438,7 +1279,7 @@ class GPUStreamProcessor(RealTimeStreamProcessor):
     def _adaptive_frame_processing(self) -> bool:
         """Determine if we should process this frame based on performance."""
         # With batch GPU processing, we can handle more frames
-        if OPENCL_GPU_AVAILABLE and self.gpu_buffers_initialized:
+        if OPENCL_GPU_AVAILABLE:
             # GPU batch processing is more efficient, less aggressive skipping
             if len(self.processing_times) < 5:
                 return True
@@ -1485,7 +1326,7 @@ class GPUStreamProcessor(RealTimeStreamProcessor):
                 return None
             
             # Batch GPU processing optimization (Stack Overflow reference)
-            if OPENCL_GPU_AVAILABLE and self.gpu_buffers_initialized:
+            if OPENCL_GPU_AVAILABLE:
                 # Apply batch GPU enhancement to images
                 enhanced_images = self._batch_process_images_gpu(images)
                 
@@ -1617,7 +1458,7 @@ class GPUStreamProcessor(RealTimeStreamProcessor):
             detailed_gpu_info = self._get_gpu_info()
             
             # Determine processing method and status
-            if OPENCL_GPU_AVAILABLE and self.gpu_buffers_initialized:
+            if OPENCL_GPU_AVAILABLE:
                 processing_method = "GPU-Enhanced OpenCL"
             else:
                 processing_method = "CPU Fallback"
@@ -1708,7 +1549,7 @@ class GPUStreamProcessor(RealTimeStreamProcessor):
                     print(f"⚠️  Car overlay failed: {e}")
             
             # Apply intensive GPU enhancement to the complete surround view
-            if OPENCL_GPU_AVAILABLE and self.gpu_buffers_initialized:
+            if OPENCL_GPU_AVAILABLE:
                 try:
                     # Apply intensive GPU operations to increase GPU utilization
                     enhanced_surround = self._enhance_gpu_utilization(base_surround_view)
