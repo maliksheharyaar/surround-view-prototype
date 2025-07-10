@@ -1396,47 +1396,83 @@ class GPUStreamProcessor(RealTimeStreamProcessor):
         refined_images = list(projected_images)
         p_front, p_back, p_left, p_right = projected_images
         
-        # Define pairs and ROIs for refinement
-        # ROIs are defined as (y_start, y_end, x_start, x_end) as percentages
-        # The homography is calculated on these smaller regions for performance.
+        # Define pairs for refinement. The goal is to warp the second image in the tuple.
         pairs = {
-            "front-left":  (p_front, p_left, (0, 1.0, 0, 0.2), (0, 1.0, 0.8, 1.0), 2), # align left to front
-            "front-right": (p_front, p_right, (0, 1.0, 0.8, 1.0), (0, 1.0, 0, 0.2), 3), # align right to front
-            "back-left":   (p_back, p_left, (0, 1.0, 0, 0.2), (0, 1.0, 0, 0.2), 2),    # align left to back
-            "back-right":  (p_back, p_right, (0, 1.0, 0.8, 1.0), (0, 1.0, 0.8, 1.0), 3)  # align right to back
+            "front-left":  (p_front, p_left, 'left', 'right', 2),  # Align left view (idx 2) to front
+            "front-right": (p_front, p_right, 'right', 'left', 3), # Align right view (idx 3) to front
+            "back-left":   (p_back, p_left, 'left', 'left', 2),    # Align left view to back
+            "back-right":  (p_back, p_right, 'right', 'right', 3), # Align right view to back
         }
 
         with ThreadPoolExecutor(max_workers=4) as executor:
             future_to_pair = {}
-            for name, (img1, img2, roi1_pct, roi2_pct, target_idx) in pairs.items():
+            for name, (img1_ref, img2_warp, area1, area2, target_idx) in pairs.items():
                 
-                # Extract ROIs
-                h1, w1 = img1.shape[:2]
-                roi1 = img1[int(h1*roi1_pct[0]):int(h1*roi1_pct[1]), int(w1*roi1_pct[2]):int(w1*roi1_pct[3])]
+                roi1 = self._get_content_roi(img1_ref, area1)
+                roi2 = self._get_content_roi(img2_warp, area2)
                 
-                h2, w2 = img2.shape[:2]
-                roi2 = img2[int(h2*roi2_pct[0]):int(h2*roi2_pct[1]), int(w2*roi2_pct[2]):int(w2*roi2_pct[3])]
+                if roi1 is None or roi2 is None:
+                    self.refinement_status[name] = "NO_ROI"
+                    continue
                 
-                # We want to warp img2 to align with img1
+                # We want to warp the region from img2 to align with the region from img1
                 future = executor.submit(self.homography_refiner.find_refinement_homography, roi2, roi1)
                 future_to_pair[future] = (name, target_idx)
             
             for future in as_completed(future_to_pair):
                 name, target_idx = future_to_pair[future]
                 try:
-                    h_matrix = future.result()
+                    h_matrix, status = future.result()
+                    self.refinement_status[name] = status
                     if h_matrix is not None:
-                        # If homography is found, warp the *entire* original projected image
+                        # Warp the *entire* original projected image
                         target_image_to_warp = projected_images[target_idx]
                         dsize = (target_image_to_warp.shape[1], target_image_to_warp.shape[0])
-                        refined_images[target_idx] = cv2.warpPerspective(target_image_to_warp, h_matrix, dsize)
-                        self.refinement_status[name] = "OK"
-                    else:
-                        self.refinement_status[name] = "FAIL"
-                except Exception:
-                    self.refinement_status[name] = "ERROR"
+                        refined_images[target_idx] = cv2.warpPerspective(target_image_to_warp, h_matrix, dsize, borderMode=cv2.BORDER_TRANSPARENT)
+
+                except Exception as e:
+                    self.refinement_status[name] = "EXCEPT"
                     
         return refined_images
+
+    def _get_content_roi(self, image: np.ndarray, area: str) -> Optional[np.ndarray]:
+        """
+        Extracts a specific region of interest from the non-black content area of an image.
+
+        Args:
+            image: The input image, which may have black borders.
+            area: Which part to extract ('left', 'right', 'top', 'bottom').
+
+        Returns:
+            The ROI as a NumPy array, or None if the image is empty.
+        """
+        if image is None or image.size == 0:
+            return None
+
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        mask = gray > 0
+        coords = np.argwhere(mask)
+        if coords.size == 0:
+            return None
+
+        y_min, x_min = coords.min(axis=0)
+        y_max, x_max = coords.max(axis=0)
+
+        content_h = y_max - y_min
+        content_w = x_max - x_min
+        
+        if content_h <= 0 or content_w <= 0:
+            return None
+
+        # Define ROI based on a percentage of the content area
+        if area == 'left':
+            roi = image[y_min:y_max, x_min:x_min + int(content_w * 0.25)]
+        elif area == 'right':
+            roi = image[y_min:y_max, x_max - int(content_w * 0.25):x_max]
+        else: # Add top/bottom if needed later
+            return None
+        
+        return roi
 
     def _opencl_enhance_frame(self, frame: np.ndarray) -> np.ndarray:
         """Lightweight OpenCL enhancement for better performance."""
@@ -1757,10 +1793,10 @@ class GPUStreamProcessor(RealTimeStreamProcessor):
                     color = (0, 255, 255)
                 elif "Dynamic Homography" in line:
                     color = (255, 255, 0) # Cyan for title
-                elif any(s in line for s in ["OK", "FAIL", "ERROR"]):
-                    if "OK" in line: color = (0, 255, 0)
-                    elif "FAIL" in line: color = (0, 165, 255)
-                    else: color = (0, 0, 255)
+                elif any(s in line for s in ["OK", "FAIL", "ERROR", "NO_FEAT", "H_FAIL", "LOW_MATCH", "NO_ROI"]):
+                    if "OK" in line: color = (0, 255, 0) # Green
+                    elif "FAIL" in line or "LOW_MATCH" in line: color = (0, 165, 255) # Orange
+                    else: color = (0, 0, 255) # Red
 
                 cv2.putText(image, line, (10 + padding, y),
                             font, font_scale, color, font_thickness)
