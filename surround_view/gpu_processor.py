@@ -42,7 +42,7 @@ def setup_opencl_environment():
 
 def configure_opencl_device():
     """Configure OpenCL device based on OpenCV documentation recommendations."""
-    print("🔧 Configuring OpenCL Device (Based on OpenCV Official Documentation)")
+    print("Configuring OpenCL Device (Based on OpenCV Official Documentation)")
     print("=" * 70)
     
     # Setup environment first
@@ -450,7 +450,7 @@ class GPUAcceleratedProcessor:
             self.opencl_working = False
     
     def process_frame_gpu(self, camera_images: Dict[str, np.ndarray]) -> Tuple[np.ndarray, Dict[str, Any]]:
-        """Process frame with maximum OpenCL GPU utilization using parallel batch processing."""
+        """Process frame with individual GPU processing (no batching)."""
         total_start = time.time()
         
         # Verify OpenCL is still working (every 10th frame)
@@ -462,33 +462,26 @@ class GPUAcceleratedProcessor:
                 status_msg = "enabled" if self.opencl_working else "disabled"
                 print(f"🔄 OpenCL status changed: {status_msg}")
         
-        # Process all cameras simultaneously on GPU for maximum utilization
+        # Process cameras individually
         camera_results = {}
         camera_stats = {}
         
         if OPENCL_GPU_AVAILABLE and self.opencl_working:
-            # GPU batch processing - convert all camera images to UMat simultaneously
-            gpu_processing_start = time.time()
-            
-            # Phase 1: Upload all images to GPU memory at once
-            gpu_images = {}
-            upload_start = time.time()
+            # Individual GPU processing for each camera
             for name, image in camera_images.items():
-                gpu_images[name] = cv2.UMat(image)
-            upload_time = (time.time() - upload_start) * 1000
-            
-            # Phase 2: Process all cameras in parallel on GPU with intensive operations
-            batch_start = time.time()
-            gpu_processed = {}
-            
-            # Parallel intensive processing for maximum GPU core utilization
-            for name, gpu_image in gpu_images.items():
                 try:
-                    # Intensive multi-stage GPU processing pipeline
-                    # Stage 1: Multiple blur operations
-                    processed = cv2.GaussianBlur(gpu_image, (15, 15), 0)
-                    processed = cv2.GaussianBlur(processed, (11, 11), 0)
-                    processed = cv2.bilateralFilter(processed, 9, 75, 75)
+                    individual_start = time.time()
+                    
+                    # Upload to GPU
+                    upload_start = time.time()
+                    gpu_image = cv2.UMat(image)
+                    upload_time = (time.time() - upload_start) * 1000
+                    
+                    # Individual GPU processing pipeline
+                    gpu_process_start = time.time()
+                    
+                    # Stage 1: Basic enhancement
+                    processed = cv2.GaussianBlur(gpu_image, (5, 5), 0)
                     
                     # Stage 2: Camera-specific undistortion
                     camera = self.gpu_cameras[name]
@@ -499,78 +492,44 @@ class GPUAcceleratedProcessor:
                     else:
                         undistorted = processed
                     
-                    # Stage 3: Edge enhancement (GPU parallel)
-                    sobelx = cv2.Sobel(undistorted, cv2.CV_64F, 1, 0, ksize=5)
-                    sobely = cv2.Sobel(undistorted, cv2.CV_64F, 0, 1, ksize=5)
-                    edge_enhanced = cv2.addWeighted(undistorted, 0.8, 
-                                                  cv2.convertScaleAbs(cv2.magnitude(sobelx, sobely)), 0.2, 0)
-                    
-                    # Stage 4: Morphological operations
-                    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-                    kernel_umat = cv2.UMat(kernel)
-                    enhanced = cv2.morphologyEx(edge_enhanced, cv2.MORPH_CLOSE, kernel_umat)
-                    enhanced = cv2.morphologyEx(enhanced, cv2.MORPH_OPEN, kernel_umat)
-                    
-                    # Stage 5: Camera-specific projection
+                    # Stage 3: Camera-specific projection
                     if hasattr(camera.camera, 'projection_matrix') and camera.camera.projection_matrix is not None:
-                        h, w = camera_images[name].shape[:2]
+                        h, w = image.shape[:2]
                         system_config = SystemConfig()
                         proj_shape = system_config.projection_shapes.get(name, (w, h))
                         
                         projection_matrix_opencl = cv2.UMat(camera.camera.projection_matrix.astype(np.float32))
-                        projected = cv2.warpPerspective(enhanced, projection_matrix_opencl, proj_shape)
+                        projected = cv2.warpPerspective(undistorted, projection_matrix_opencl, proj_shape)
                     else:
-                        projected = enhanced
+                        projected = undistorted
                     
-                    # Stage 6: Final enhancement
-                    if len(projected.shape) == 3:
-                        # CLAHE enhancement
-                        lab = cv2.cvtColor(projected, cv2.COLOR_BGR2LAB)
-                        l, a, b = cv2.split(lab)
-                        
-                        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-                        l_enhanced = clahe.apply(l)
-                        
-                        enhanced_lab = cv2.merge([l_enhanced, a, b])
-                        final_result = cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2BGR)
-                    else:
-                        final_result = projected
+                    # Stage 4: Final enhancement
+                    final_result = cv2.convertScaleAbs(projected, alpha=1.02, beta=1)
                     
-                    # Final sharpening
-                    sharpen_kernel = cv2.UMat(np.array([[-1,-1,-1],[-1,9,-1],[-1,-1,-1]], dtype=np.float32))
-                    final_result = cv2.filter2D(final_result, -1, sharpen_kernel)
+                    gpu_process_time = (time.time() - gpu_process_start) * 1000
                     
-                    gpu_processed[name] = final_result
+                    # Download from GPU
+                    download_start = time.time()
+                    result = final_result.get()
+                    download_time = (time.time() - download_start) * 1000
+                    
+                    camera_results[name] = result
+                    
+                    # Create stats for this camera
+                    stats = GPUStats()
+                    stats.gpu_time_ms = gpu_process_time
+                    stats.upload_time_ms = upload_time
+                    stats.download_time_ms = download_time
+                    stats.total_time_ms = (time.time() - individual_start) * 1000
+                    camera_stats[name] = stats
                     
                 except Exception as e:
-                    print(f"⚠️  GPU processing failed for camera {name}: {e}")
-                    # Fallback to simple processing
-                    gpu_processed[name] = gpu_images[name]
+                    print(f"⚠️  Individual GPU processing failed for camera {name}: {e}")
+                    # Fallback to CPU for this camera
+                    camera_results[name] = self.gpu_cameras[name].camera.process_image(image)
+                    camera_stats[name] = GPUStats()
             
-            batch_processing_time = (time.time() - batch_start) * 1000
-            
-            # Phase 3: Download all results from GPU at once
-            download_start = time.time()
-            for name, gpu_result in gpu_processed.items():
-                camera_results[name] = gpu_result.get()
-                
-                # Create stats for each camera
-                stats = GPUStats()
-                stats.gpu_time_ms = batch_processing_time / len(gpu_processed)  # Distributed time
-                stats.upload_time_ms = upload_time / len(gpu_processed)
-                stats.download_time_ms = 0  # Will be set below
-                stats.total_time_ms = 0  # Will be calculated below
-                camera_stats[name] = stats
-            
-            download_time = (time.time() - download_start) * 1000
-            gpu_total_time = (time.time() - gpu_processing_start) * 1000
-            
-            # Update download times
-            for stats in camera_stats.values():
-                stats.download_time_ms = download_time / len(camera_stats)
-                stats.total_time_ms = stats.upload_time_ms + stats.gpu_time_ms + stats.download_time_ms
-            
-            print(f"🚀 GPU batch processed {len(camera_images)} cameras in {gpu_total_time:.1f}ms")
+            print(f"🚀 Individual GPU processed {len(camera_images)} cameras")
             
         else:
             # CPU fallback with parallel processing
@@ -615,7 +574,7 @@ class GPUAcceleratedProcessor:
             'avg_gpu_time_ms': np.mean([s.gpu_time_ms for s in camera_stats.values()]),
             'avg_cpu_time_ms': np.mean([s.cpu_time_ms for s in camera_stats.values()]),
             'total_streams_used': sum(s.cuda_streams_used for s in camera_stats.values()),
-            'batch_processed': OPENCL_GPU_AVAILABLE and self.opencl_working
+            'individual_processed': OPENCL_GPU_AVAILABLE and self.opencl_working
         }
         
         # Store stats for monitoring

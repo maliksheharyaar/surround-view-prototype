@@ -1,6 +1,15 @@
-# 360° Surround View System
+# 360° Surround View System with System Profiler
 
-This project provides a 360-degree surround view system that stitches together images from multiple fisheye cameras to create a top-down, bird's-eye view.
+This project provides a 360-degree surround view system that stitches together images from multiple fisheye cameras to create a top-down, bird's-eye view. It includes a simple system profiler for monitoring performance during processing.
+
+## Features
+
+- **Real-time 360° surround view processing**
+- **GPU acceleration with OpenCL support**
+- **Simple system profiler for resource monitoring**
+- **CPU, RAM, GPU, and VRAM monitoring**
+- **Performance data logging to CSV**
+- **Easy concurrent execution**
 
 ## Getting Started
 
@@ -25,6 +34,32 @@ pip install -r requirements_gpu.txt
 ```
 
 ### 2. Usage
+
+**GUI-Based Profiler with Surround View**
+
+Launch the GUI profiler that provides a configuration window and real-time monitoring:
+
+```bash
+python system_profiler.py
+```
+
+This opens a configuration window where you can:
+- Set target FPS (1-30)
+- Configure monitoring duration 
+- Enable CSV logging with custom file path
+- Launch both surround view processing and monitoring
+
+When you click "Start Monitoring":
+1. A separate monitoring window opens with real-time graphs
+2. `generate_blend_weights.py` runs with your specified settings
+3. Both processes run in parallel until completion
+
+**Running Components Separately**
+
+Run just the surround view processing:
+```bash
+python generate_blend_weights.py --fps 10 --duration 30
+```
 
 **Quick Run (with pre-calibrated settings)**
 
@@ -98,6 +133,50 @@ This script will:
 4.  Apply color correction in real-time.
 5.  Display the live stitched view in a window.
 
+## System Profiling
+
+The project includes a GUI-based system profiler with real-time graphs and monitoring capabilities.
+
+### 3. System Profiler Features
+
+**Configuration Window:**
+- Adjustable target FPS (1-30 fps)
+- Configurable monitoring duration
+- Optional CSV logging with file browser
+- Easy launch controls
+
+**Real-Time Monitoring Window:**
+- Live system performance graphs (CPU, Memory, GPU, VRAM)
+- Current statistics display with numerical values
+- Time-series plots showing last 60 seconds of data
+- Monitoring status and elapsed/remaining time
+- Automatic completion summary
+
+**System Metrics Monitored:**
+- **CPU**: Utilization percentage and temperature
+- **Memory**: RAM usage percentage and GB values
+- **GPU**: Load percentage and VRAM usage
+- **VRAM**: Usage percentage and GB values
+- **Temperature**: CPU and GPU thermal monitoring (if available)
+
+**Data Export:**
+- CSV logging with timestamps
+- Performance summary statistics
+- Historical data for analysis
+
+### 4. Performance Optimization
+
+**GPU Acceleration:**
+The system automatically detects and uses OpenCL GPU acceleration when available. To optimize performance:
+
+```bash
+# Check GPU compatibility
+python -c "import cv2; print('OpenCL available:', cv2.ocl.haveOpenCL())"
+
+# Run with profiling
+python run_with_profiler.py --fps 12 --duration 60
+```
+
 ## Project Structure
 
 ```
@@ -107,6 +186,7 @@ This script will:
 ├── surround_view/          # Core source code
 ├── create_projection_maps.py # Step 1: Projection calibration tool
 ├── generate_blend_weights.py # Step 2: Blending and stitching tool
+├── system_profiler.py      # GUI-based system profiler with real-time graphs
 ├── requirements.txt        # Main dependencies
 ├── requirements_gpu.txt    # Optional GPU dependencies
 └── README.md
