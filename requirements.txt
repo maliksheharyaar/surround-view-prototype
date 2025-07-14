@@ -1,8 +1,21 @@
+# Core dependencies for 360° Surround View System
 opencv-python>=4.5.0
-PyQt5>=5.15.0
 numpy>=1.19.0
-Pillow>=8.0.0
 PyYAML>=5.4.0
+Pillow>=8.0.0
+
+# System monitoring and profiling
 psutil>=5.8.0
 matplotlib>=3.3.0
-py3nvml>=0.2.6 
+
+# GUI framework (PyQt5 for enhanced features, tkinter included with Python)
+PyQt5>=5.15.0
+
+# Mathematical operations
+scipy>=1.7.0
+
+# GPU monitoring (optional but recommended)
+py3nvml>=0.2.6
+
+# Python version compatibility
+dataclasses>=0.6.0;python_version<"3.7" 
