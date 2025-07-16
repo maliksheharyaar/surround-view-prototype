@@ -3,7 +3,7 @@ GPU-Accelerated 360° View Processor for Benchmarking
 ===================================================
 
 High-performance GPU-accelerated image processing pipeline optimized for benchmarking.
-Features CUDA acceleration, memory optimization, and multi-stream processing.
+Features OpenCL acceleration, memory optimization, and parallel processing.
 """
 
 import time
@@ -243,7 +243,7 @@ class GPUStats:
     upload_time_ms: float = 0.0
     download_time_ms: float = 0.0
     total_time_ms: float = 0.0
-    cuda_streams_used: int = 0
+    opencl_operations: int = 0
     memory_usage_mb: float = 0.0
 
 
@@ -251,23 +251,9 @@ class GPUMemoryManager:
     """OpenCL memory manager for efficient resource allocation."""
     
     def __init__(self):
-        self.gpu_mats = {}
-        # OpenCL doesn't use streams like CUDA
         self.opencl_enabled = cv2.ocl.haveOpenCL()
         if self.opencl_enabled:
             cv2.ocl.setUseOpenCL(True)
-    
-    def get_gpu_mat(self, key: str, shape: Tuple[int, int], dtype: int = cv2.CV_8UC3):
-        """Get or create OpenCL UMat."""
-        if not self.opencl_enabled:
-            return None
-        
-        # For OpenCL, we don't pre-allocate UMats as they're created dynamically
-        return None
-    
-    def get_stream(self, index: int = 0):
-        """OpenCL doesn't use streams like CUDA."""
-        return None
 
 
 class GPUAcceleratedCamera:
@@ -395,7 +381,7 @@ class GPUAcceleratedCamera:
             stats.download_time_ms = (time.time() - download_start) * 1000
             
             stats.total_time_ms = (time.time() - total_start) * 1000
-            stats.cuda_streams_used = 0  # OpenCL doesn't use CUDA streams
+            stats.opencl_operations = 8  # Number of OpenCL operations performed
             
             return result, stats
             
@@ -573,7 +559,7 @@ class GPUAcceleratedProcessor:
             'gpu_method': GPU_ACCELERATION_METHOD,
             'avg_gpu_time_ms': np.mean([s.gpu_time_ms for s in camera_stats.values()]),
             'avg_cpu_time_ms': np.mean([s.cpu_time_ms for s in camera_stats.values()]),
-            'total_streams_used': sum(s.cuda_streams_used for s in camera_stats.values()),
+            'total_opencl_operations': sum(s.opencl_operations for s in camera_stats.values()),
             'individual_processed': OPENCL_GPU_AVAILABLE and self.opencl_working
         }
         
@@ -667,8 +653,8 @@ class GPUAcceleratedProcessor:
         
         benchmark_results = {
             'iterations': iterations,
-            'cuda_available': OPENCL_GPU_AVAILABLE,
-            'gpu_count': cv2.ocl.Device.getDefault().name() if OPENCL_GPU_AVAILABLE else 0,
+            'opencl_available': OPENCL_GPU_AVAILABLE,
+            'opencl_device': cv2.ocl.Device.getDefault().name() if OPENCL_GPU_AVAILABLE else 'None',
             'performance_metrics': {
                 'avg_frame_time_ms': np.mean(frame_times),
                 'min_frame_time_ms': np.min(frame_times),
@@ -710,6 +696,6 @@ class GPUAcceleratedProcessor:
                 'avg_gpu_time_ms': np.mean(gpu_times),
                 'avg_cpu_time_ms': np.mean(cpu_times),
                 'current_fps': 1000 / np.mean(total_times) if total_times else 0,
-                'cuda_available': OPENCL_GPU_AVAILABLE,
+                'opencl_available': OPENCL_GPU_AVAILABLE,
                 'gpu_acceleration_ratio': np.mean(gpu_times) / np.mean(total_times) if total_times and gpu_times else 0
             } 

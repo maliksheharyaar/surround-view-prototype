@@ -2,8 +2,8 @@
 GUI Tools for Interactive Calibration
 =====================================
 
-Modern, user-friendly GUI components for interactive point selection and image display.
-Enhanced with real-time parameter adjustment sliders and improved user experience.
+GUI components for interactive point selection and image display.
+With real-time parameter adjustment sliders and improved user experience.
 """
 
 from typing import List, Tuple, Optional, Callable

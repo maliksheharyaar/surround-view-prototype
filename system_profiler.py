@@ -39,6 +39,10 @@ import argparse
 import csv
 from pathlib import Path
 
+# Set matplotlib backend before importing pyplot to prevent threading issues
+import matplotlib
+matplotlib.use('TkAgg')  # Use thread-safe backend
+
 try:
     import py3nvml.py3nvml as nvml
     NVML_AVAILABLE = True
@@ -57,6 +61,12 @@ try:
     NVIDIA_SMI_AVAILABLE = True
 except ImportError:
     NVIDIA_SMI_AVAILABLE = False
+
+try:
+    from scipy.interpolate import interp1d
+    SCIPY_AVAILABLE = True
+except ImportError:
+    SCIPY_AVAILABLE = False
 
 try:
     import matplotlib
@@ -91,8 +101,6 @@ class SystemSnapshot:
     gpu_memory_percent: float
     gpu_memory_used_gb: float
     gpu_memory_total_gb: float
-    gpu_temp: Optional[float] = None
-    cpu_temp: Optional[float] = None
 
 
 class GPUMonitor:
@@ -128,7 +136,7 @@ class GPUMonitor:
         try:
             result = subprocess.run([
                 'nvidia-smi', 
-                '--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu',
+                '--query-gpu=name,utilization.gpu,memory.used,memory.total',
                 '--format=csv,noheader,nounits'
             ], capture_output=True, text=True, timeout=5)
             
@@ -183,8 +191,7 @@ class GPUMonitor:
             'load': 0.0,
             'memory_percent': 0.0,
             'memory_used_gb': 0.0,
-            'memory_total_gb': 8.0,  # Default fallback
-            'temperature': None
+            'memory_total_gb': 8.0  # Default fallback
         }
         
         # Method 1: Try NVML
@@ -202,13 +209,6 @@ class GPUMonitor:
                 stats['memory_total_gb'] = mem_info.total / (1024**3)
                 stats['memory_percent'] = (mem_info.used / mem_info.total) * 100
                 
-                # Temperature
-                try:
-                    temp = nvml.nvmlDeviceGetTemperature(handle, nvml.NVML_TEMPERATURE_GPU)
-                    stats['temperature'] = float(temp)
-                except:
-                    pass
-                
                 return stats
             except Exception as e:
                 print(f"⚠️  NVML stats error: {e}")
@@ -218,7 +218,7 @@ class GPUMonitor:
             try:
                 result = subprocess.run([
                     'nvidia-smi', 
-                    '--query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu',
+                    '--query-gpu=utilization.gpu,memory.used,memory.total',
                     '--format=csv,noheader,nounits'
                 ], capture_output=True, text=True, timeout=3)
                 
@@ -226,7 +226,7 @@ class GPUMonitor:
                     line = result.stdout.strip()
                     if line:
                         parts = [p.strip() for p in line.split(',')]
-                        if len(parts) >= 4:
+                        if len(parts) >= 3:
                             stats['load'] = float(parts[0]) if parts[0] != '[N/A]' else 0.0
                             
                             memory_used_mb = float(parts[1]) if parts[1] != '[N/A]' else 0.0
@@ -236,9 +236,6 @@ class GPUMonitor:
                             stats['memory_total_gb'] = memory_total_mb / 1024
                             if memory_total_mb > 0:
                                 stats['memory_percent'] = (memory_used_mb / memory_total_mb) * 100
-                            
-                            if parts[3] != '[N/A]':
-                                stats['temperature'] = float(parts[3])
                         
                         return stats
             except Exception as e:
@@ -347,15 +344,6 @@ class SystemMonitor:
         # GPU stats
         gpu_stats = self.gpu_monitor.get_gpu_stats()
         
-        # CPU temperature (basic attempt)
-        cpu_temp = None
-        try:
-            temps = psutil.sensors_temperatures()
-            if 'coretemp' in temps:
-                cpu_temp = temps['coretemp'][0].current
-        except:
-            pass
-        
         return SystemSnapshot(
             timestamp=time.time(),
             cpu_percent=cpu_percent,
@@ -365,9 +353,7 @@ class SystemMonitor:
             gpu_load=gpu_stats['load'],
             gpu_memory_percent=gpu_stats['memory_percent'],
             gpu_memory_used_gb=gpu_stats['memory_used_gb'],
-            gpu_memory_total_gb=gpu_stats['memory_total_gb'],
-            gpu_temp=gpu_stats['temperature'],
-            cpu_temp=cpu_temp
+            gpu_memory_total_gb=gpu_stats['memory_total_gb']
         )
 
 
@@ -574,18 +560,45 @@ class MonitoringGUI:
         self.time_label.pack(side=tk.RIGHT)
         
     def _setup_plots(self):
-        """Setup matplotlib plots with thread safety."""
+        """Setup matplotlib plots with thread safety and fixed sizing."""
         try:
-            # Create figure with subplots
+            # Ensure we're in the main thread for matplotlib
+            import threading
+            if threading.current_thread() != threading.main_thread():
+                print("⚠️  Warning: Creating plots in non-main thread")
+            
+            # Set matplotlib to use thread-safe backend
+            import matplotlib
+            matplotlib.use('TkAgg')
+            
+            # Create figure with subplots and fixed size
             self.fig, ((self.ax_cpu, self.ax_memory), 
-                      (self.ax_gpu, self.ax_stats)) = plt.subplots(2, 2, figsize=(14, 10))
-            self.fig.suptitle('Real-Time System Performance Monitor', fontsize=16)
+                      (self.ax_gpu, self.ax_stats)) = plt.subplots(2, 2, figsize=(16, 10), dpi=100)
+            self.fig.suptitle('Real-Time System Performance Monitor', fontsize=16, fontweight='bold')
+            
+            # Set up time window parameters for consistent x-axis
+            self.time_window_seconds = 60  # Show last 60 seconds
+            self.plot_update_interval = 1  # Update every second
+            
+            # Initialize plot lines for efficient updates
+            self.cpu_line = None
+            self.cpu_fill = None
+            self.memory_line = None
+            self.memory_fill = None
+            self.gpu_load_line = None
+            self.gpu_memory_line = None
+            self.gpu_fill_load = None
+            self.gpu_fill_memory = None
             
             # Setup individual plots
             self._setup_cpu_plot()
             self._setup_memory_plot()
             self._setup_gpu_plot()
             self._setup_stats_plot()
+            
+            # Set figure layout with padding
+            self.fig.subplots_adjust(left=0.08, bottom=0.12, right=0.95, top=0.92, 
+                                   hspace=0.35, wspace=0.25)
             
             # Embed in tkinter
             canvas_frame = ttk.Frame(self.root)
@@ -594,7 +607,8 @@ class MonitoringGUI:
             self.canvas = FigureCanvasTkAgg(self.fig, canvas_frame)
             self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
             
-            plt.tight_layout()
+            # Initial canvas draw
+            self.canvas.draw()
             
         except Exception as e:
             print(f"⚠️  Plot setup failed: {e}")
@@ -603,28 +617,85 @@ class MonitoringGUI:
             self.canvas = None
         
     def _setup_cpu_plot(self):
-        """Setup CPU utilization plot."""
-        self.ax_cpu.set_title('CPU Utilization (%)', fontsize=12, fontweight='bold')
-        self.ax_cpu.set_ylabel('Usage (%)')
+        """Setup CPU utilization plot with enhanced details."""
+        self.ax_cpu.set_title('CPU Utilization (%)', fontsize=12, fontweight='bold', pad=15)
+        self.ax_cpu.set_ylabel('Usage (%)', fontsize=10, fontweight='bold')
         self.ax_cpu.set_ylim(0, 100)
-        self.ax_cpu.grid(True, alpha=0.3)
+        
+        # Enhanced grid
+        self.ax_cpu.grid(True, alpha=0.3, linestyle='-', linewidth=0.5)
+        self.ax_cpu.grid(True, alpha=0.15, linestyle=':', linewidth=0.3, which='minor')
+        self.ax_cpu.minorticks_on()
+        
+        # Add horizontal reference lines
+        for y in [25, 50, 75]:
+            self.ax_cpu.axhline(y=y, color='gray', linestyle='--', alpha=0.4, linewidth=0.8)
+        
+        # Styling
         self.ax_cpu.set_facecolor('#f8f9fa')
+        self.ax_cpu.spines['top'].set_visible(False)
+        self.ax_cpu.spines['right'].set_visible(False)
+        self.ax_cpu.spines['left'].set_color('#666666')
+        self.ax_cpu.spines['bottom'].set_color('#666666')
+        
+        # Y-axis ticks
+        self.ax_cpu.set_yticks([0, 20, 40, 60, 80, 100])
+        self.ax_cpu.tick_params(axis='y', labelsize=9, colors='#333333')
+        self.ax_cpu.tick_params(axis='x', labelsize=8, colors='#333333', rotation=0)
         
     def _setup_memory_plot(self):
-        """Setup memory usage plot."""
-        self.ax_memory.set_title('Memory Usage', fontsize=12, fontweight='bold')
-        self.ax_memory.set_ylabel('Usage (%)')
+        """Setup memory usage plot with enhanced details."""
+        self.ax_memory.set_title('Memory Usage (%)', fontsize=12, fontweight='bold', pad=15)
+        self.ax_memory.set_ylabel('Usage (%)', fontsize=10, fontweight='bold')
         self.ax_memory.set_ylim(0, 100)
-        self.ax_memory.grid(True, alpha=0.3)
+        
+        # Enhanced grid
+        self.ax_memory.grid(True, alpha=0.3, linestyle='-', linewidth=0.5)
+        self.ax_memory.grid(True, alpha=0.15, linestyle=':', linewidth=0.3, which='minor')
+        self.ax_memory.minorticks_on()
+        
+        # Add horizontal reference lines
+        for y in [25, 50, 75]:
+            self.ax_memory.axhline(y=y, color='gray', linestyle='--', alpha=0.4, linewidth=0.8)
+        
+        # Styling
         self.ax_memory.set_facecolor('#f8f9fa')
+        self.ax_memory.spines['top'].set_visible(False)
+        self.ax_memory.spines['right'].set_visible(False)
+        self.ax_memory.spines['left'].set_color('#666666')
+        self.ax_memory.spines['bottom'].set_color('#666666')
+        
+        # Y-axis ticks
+        self.ax_memory.set_yticks([0, 20, 40, 60, 80, 100])
+        self.ax_memory.tick_params(axis='y', labelsize=9, colors='#333333')
+        self.ax_memory.tick_params(axis='x', labelsize=8, colors='#333333', rotation=0)
         
     def _setup_gpu_plot(self):
-        """Setup GPU utilization plot."""
-        self.ax_gpu.set_title('GPU Performance', fontsize=12, fontweight='bold')
-        self.ax_gpu.set_ylabel('Usage (%)')
+        """Setup GPU utilization plot with enhanced details."""
+        self.ax_gpu.set_title('GPU Performance (%)', fontsize=12, fontweight='bold', pad=15)
+        self.ax_gpu.set_ylabel('Usage (%)', fontsize=10, fontweight='bold')
         self.ax_gpu.set_ylim(0, 100)
-        self.ax_gpu.grid(True, alpha=0.3)
+        
+        # Enhanced grid
+        self.ax_gpu.grid(True, alpha=0.3, linestyle='-', linewidth=0.5)
+        self.ax_gpu.grid(True, alpha=0.15, linestyle=':', linewidth=0.3, which='minor')
+        self.ax_gpu.minorticks_on()
+        
+        # Add horizontal reference lines
+        for y in [25, 50, 75]:
+            self.ax_gpu.axhline(y=y, color='gray', linestyle='--', alpha=0.4, linewidth=0.8)
+        
+        # Styling
         self.ax_gpu.set_facecolor('#f8f9fa')
+        self.ax_gpu.spines['top'].set_visible(False)
+        self.ax_gpu.spines['right'].set_visible(False)
+        self.ax_gpu.spines['left'].set_color('#666666')
+        self.ax_gpu.spines['bottom'].set_color('#666666')
+        
+        # Y-axis ticks
+        self.ax_gpu.set_yticks([0, 20, 40, 60, 80, 100])
+        self.ax_gpu.tick_params(axis='y', labelsize=9, colors='#333333')
+        self.ax_gpu.tick_params(axis='x', labelsize=8, colors='#333333', rotation=0)
         
     def _setup_stats_plot(self):
         """Setup statistics display."""
@@ -682,16 +753,23 @@ class MonitoringGUI:
             # Start animation with error handling
             if self.fig is not None and self.canvas is not None:
                 try:
+                    # Store animation reference to prevent garbage collection warning
                     self.ani = animation.FuncAnimation(
                         self.fig, self._update_plots, interval=1000, blit=False,
-                        cache_frame_data=False)  # Disable caching to avoid warnings
+                        cache_frame_data=False, repeat=True)  # Proper animation setup
+                    
+                    # Keep a reference to prevent deletion warning
+                    self._animation_ref = self.ani
+                    
                     print("✅ Animation started successfully")
                 except Exception as e:
                     print(f"⚠️  Animation setup failed: {e}")
                     self.ani = None
+                    self._animation_ref = None
             else:
                 print("⚠️  No figure available for animation")
                 self.ani = None
+                self._animation_ref = None
             
             if hasattr(self, 'status_label'):
                 self.status_label.config(text="Monitoring active")
@@ -699,11 +777,6 @@ class MonitoringGUI:
         except Exception as e:
             print(f"❌ Failed to start monitoring: {e}")
             self._cleanup()
-        self.ani = animation.FuncAnimation(
-            self.fig, self._update_plots, interval=1000, blit=False,
-            cache_frame_data=False)  # Disable caching to avoid warnings
-        
-        self.status_label.config(text="Monitoring active")
         
     def _monitor_loop(self):
         """Main monitoring loop."""
@@ -756,91 +829,211 @@ class MonitoringGUI:
                 break
                 
     def _update_plots(self, frame):
-        """Update all plots with new data."""
+        """Update all plots with new data using fixed time window."""
         if not self.snapshots:
             return
             
         try:
-            # Clear plots
-            self.ax_cpu.clear()
-            self.ax_memory.clear()
-            self.ax_gpu.clear()
-            self.ax_stats.clear()
+            # Get current time for fixed window
+            current_time = time.time()
+            window_start = current_time - self.time_window_seconds
             
-            # Re-setup
+            # Filter snapshots to time window
+            window_snapshots = [s for s in self.snapshots if s.timestamp >= window_start]
+            
+            if not window_snapshots:
+                return
+            
+            # Create time arrays with fixed window
+            timestamps = [s.timestamp for s in window_snapshots]
+            relative_times = [(t - window_start) for t in timestamps]
+            
+            # Create fixed time axis (0 to window_seconds)
+            time_axis = np.linspace(0, self.time_window_seconds, 100)
+            
+            # Clear and re-setup plots (but maintain axes limits)
+            for ax in [self.ax_cpu, self.ax_memory, self.ax_gpu]:
+                ax.clear()
+            
+            # Re-setup with consistent formatting
             self._setup_cpu_plot()
-            self._setup_memory_plot()
+            self._setup_memory_plot() 
             self._setup_gpu_plot()
+            
+            # Set fixed time axes for all plots
+            for ax in [self.ax_cpu, self.ax_memory, self.ax_gpu]:
+                ax.set_xlim(0, self.time_window_seconds)
+                ax.set_xlabel('Time (seconds ago)', fontsize=10, fontweight='bold')
+                
+                # Create time ticks - show last N seconds
+                time_ticks = np.arange(0, self.time_window_seconds + 1, 10)
+                time_labels = [f'{int(self.time_window_seconds - t)}s' for t in time_ticks]
+                ax.set_xticks(time_ticks)
+                ax.set_xticklabels(time_labels)
+            
+            # Prepare data arrays
+            cpu_data = [s.cpu_percent for s in window_snapshots]
+            memory_data = [s.memory_percent for s in window_snapshots]
+            gpu_load_data = [s.gpu_load for s in window_snapshots]
+            gpu_memory_data = [s.gpu_memory_percent for s in window_snapshots]
+            
+            # CPU plot with enhanced visuals
+            if cpu_data and relative_times:
+                # Interpolate for smooth curves
+                if len(relative_times) > 1 and SCIPY_AVAILABLE:
+                    try:
+                        f_cpu = interp1d(relative_times, cpu_data, kind='cubic', bounds_error=False, fill_value='extrapolate')
+                        smooth_cpu = f_cpu(time_axis)
+                        smooth_cpu = np.clip(smooth_cpu, 0, 100)  # Ensure bounds
+                        
+                        self.ax_cpu.plot(time_axis, smooth_cpu, 'b-', linewidth=2.5, label='CPU Usage', alpha=0.9)
+                        self.ax_cpu.fill_between(time_axis, smooth_cpu, alpha=0.25, color='blue')
+                    except:
+                        # Fallback to simple plot
+                        self.ax_cpu.plot(relative_times, cpu_data, 'bo-', linewidth=2, markersize=3, label='CPU Usage')
+                else:
+                    self.ax_cpu.plot(relative_times, cpu_data, 'bo-', linewidth=2, markersize=4, label='CPU Usage')
+                
+                # Add current value marker
+                if cpu_data:
+                    current_cpu = cpu_data[-1]
+                    self.ax_cpu.plot(relative_times[-1], current_cpu, 'ro', markersize=8, alpha=0.8)
+                    self.ax_cpu.annotate(f'{current_cpu:.1f}%', 
+                                       xy=(relative_times[-1], current_cpu),
+                                       xytext=(5, 5), textcoords='offset points',
+                                       fontsize=9, fontweight='bold', color='darkblue',
+                                       bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8))
+            
+            # Memory plot with enhanced visuals  
+            if memory_data and relative_times:
+                if len(relative_times) > 1 and SCIPY_AVAILABLE:
+                    try:
+                        f_mem = interp1d(relative_times, memory_data, kind='cubic', bounds_error=False, fill_value='extrapolate')
+                        smooth_mem = f_mem(time_axis)
+                        smooth_mem = np.clip(smooth_mem, 0, 100)
+                        
+                        self.ax_memory.plot(time_axis, smooth_mem, 'g-', linewidth=2.5, label='RAM Usage', alpha=0.9)
+                        self.ax_memory.fill_between(time_axis, smooth_mem, alpha=0.25, color='green')
+                    except:
+                        self.ax_memory.plot(relative_times, memory_data, 'go-', linewidth=2, markersize=3, label='RAM Usage')
+                else:
+                    self.ax_memory.plot(relative_times, memory_data, 'go-', linewidth=2, markersize=4, label='RAM Usage')
+                
+                # Add current value marker
+                if memory_data:
+                    current_mem = memory_data[-1]
+                    self.ax_memory.plot(relative_times[-1], current_mem, 'ro', markersize=8, alpha=0.8)
+                    self.ax_memory.annotate(f'{current_mem:.1f}%', 
+                                          xy=(relative_times[-1], current_mem),
+                                          xytext=(5, 5), textcoords='offset points',
+                                          fontsize=9, fontweight='bold', color='darkgreen',
+                                          bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8))
+            
+            # GPU plot with dual metrics
+            if gpu_load_data and relative_times:
+                if len(relative_times) > 1 and SCIPY_AVAILABLE:
+                    try:
+                        f_gpu_load = interp1d(relative_times, gpu_load_data, kind='cubic', bounds_error=False, fill_value='extrapolate')
+                        f_gpu_mem = interp1d(relative_times, gpu_memory_data, kind='cubic', bounds_error=False, fill_value='extrapolate') 
+                        
+                        smooth_gpu_load = f_gpu_load(time_axis)
+                        smooth_gpu_mem = f_gpu_mem(time_axis)
+                        smooth_gpu_load = np.clip(smooth_gpu_load, 0, 100)
+                        smooth_gpu_mem = np.clip(smooth_gpu_mem, 0, 100)
+                        
+                        self.ax_gpu.plot(time_axis, smooth_gpu_load, 'r-', linewidth=2.5, label='GPU Load', alpha=0.9)
+                        self.ax_gpu.plot(time_axis, smooth_gpu_mem, 'm-', linewidth=2.5, label='VRAM Usage', alpha=0.9)
+                        self.ax_gpu.fill_between(time_axis, smooth_gpu_load, alpha=0.2, color='red')
+                        self.ax_gpu.fill_between(time_axis, smooth_gpu_mem, alpha=0.2, color='magenta')
+                    except:
+                        self.ax_gpu.plot(relative_times, gpu_load_data, 'ro-', linewidth=2, markersize=3, label='GPU Load')
+                        self.ax_gpu.plot(relative_times, gpu_memory_data, 'mo-', linewidth=2, markersize=3, label='VRAM Usage')
+                else:
+                    self.ax_gpu.plot(relative_times, gpu_load_data, 'ro-', linewidth=2, markersize=4, label='GPU Load')
+                    self.ax_gpu.plot(relative_times, gpu_memory_data, 'mo-', linewidth=2, markersize=4, label='VRAM Usage')
+                
+                # Add current value markers
+                if gpu_load_data:
+                    current_gpu = gpu_load_data[-1]
+                    current_vram = gpu_memory_data[-1] if gpu_memory_data else 0
+                    
+                    self.ax_gpu.plot(relative_times[-1], current_gpu, 'ro', markersize=8, alpha=0.8)
+                    self.ax_gpu.plot(relative_times[-1], current_vram, 'mo', markersize=8, alpha=0.8)
+                    
+                    # Annotations for current values
+                    self.ax_gpu.annotate(f'GPU: {current_gpu:.1f}%', 
+                                       xy=(relative_times[-1], current_gpu),
+                                       xytext=(5, 15), textcoords='offset points',
+                                       fontsize=9, fontweight='bold', color='darkred',
+                                       bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8))
+                    
+                    self.ax_gpu.annotate(f'VRAM: {current_vram:.1f}%', 
+                                       xy=(relative_times[-1], current_vram),
+                                       xytext=(5, -15), textcoords='offset points',
+                                       fontsize=9, fontweight='bold', color='darkmagenta',
+                                       bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8))
+                
+                # Add legend with better positioning
+                self.ax_gpu.legend(loc='upper right', framealpha=0.9, fancybox=True, shadow=True)
+            
+            # Statistics display (unchanged but enhanced)
+            self.ax_stats.clear()
             self._setup_stats_plot()
             
-            # Get recent data for plotting
-            recent_snapshots = self.snapshots[-60:]  # Last 60 seconds
-            timestamps = [datetime.fromtimestamp(s.timestamp) for s in recent_snapshots]
-            
-            # CPU plot
-            cpu_data = [s.cpu_percent for s in recent_snapshots]
-            self.ax_cpu.plot(timestamps, cpu_data, 'b-', linewidth=2, label='CPU Usage')
-            self.ax_cpu.fill_between(timestamps, cpu_data, alpha=0.3, color='blue')
-            
-            # Memory plot
-            memory_data = [s.memory_percent for s in recent_snapshots]
-            self.ax_memory.plot(timestamps, memory_data, 'g-', linewidth=2, label='RAM Usage')
-            self.ax_memory.fill_between(timestamps, memory_data, alpha=0.3, color='green')
-            
-            # GPU plot
-            gpu_load_data = [s.gpu_load for s in recent_snapshots]
-            gpu_memory_data = [s.gpu_memory_percent for s in recent_snapshots]
-            
-            self.ax_gpu.plot(timestamps, gpu_load_data, 'r-', linewidth=2, label='GPU Load')
-            self.ax_gpu.plot(timestamps, gpu_memory_data, 'm-', linewidth=2, label='VRAM Usage')
-            self.ax_gpu.legend()
-            
-            # Format time axes
-            for ax in [self.ax_cpu, self.ax_memory, self.ax_gpu]:
-                ax.tick_params(axis='x', rotation=45)
-                if len(timestamps) > 10:
-                    # Show fewer time labels for readability
-                    ax.set_xticks(timestamps[::10])
-            
-            # Statistics display
             if self.snapshots:
                 current = self.snapshots[-1]
+                
+                # Calculate min/max for the window
+                if len(window_snapshots) > 1:
+                    window_cpu = [s.cpu_percent for s in window_snapshots]
+                    window_memory = [s.memory_percent for s in window_snapshots]
+                    window_gpu = [s.gpu_load for s in window_snapshots]
+                    window_vram = [s.gpu_memory_percent for s in window_snapshots]
+                    
+                    cpu_min, cpu_max = min(window_cpu), max(window_cpu)
+                    mem_min, mem_max = min(window_memory), max(window_memory)
+                    gpu_min, gpu_max = min(window_gpu), max(window_gpu)
+                    vram_min, vram_max = min(window_vram), max(window_vram)
+                else:
+                    cpu_min = cpu_max = current.cpu_percent
+                    mem_min = mem_max = current.memory_percent
+                    gpu_min = gpu_max = current.gpu_load
+                    vram_min = vram_max = current.gpu_memory_percent
                 
                 # Check surround view process status
                 surround_status = "❌ Not Started"
                 if self.surround_process:
                     if self.surround_process.poll() is None:
-                        surround_status = "Running"
+                        surround_status = "🟢 Running"
                     else:
                         surround_status = f"🏁 Finished (code: {self.surround_process.returncode})"
                 
                 stats_text = f"""
 PROCESS STATUS
 Surround View: {surround_status}
-Profiler: Running
+Profiler: 🟢 Running
 
 CURRENT SYSTEM STATUS
-CPU: {current.cpu_percent:5.1f}%
-{"Temperature: " + f"{current.cpu_temp:.1f}°C" if current.cpu_temp else ""}
+CPU: {current.cpu_percent:5.1f}%    (Min: {cpu_min:.1f}% | Max: {cpu_max:.1f}%)
 
-MEMORY: {current.memory_percent:5.1f}%
+MEMORY: {current.memory_percent:5.1f}%    (Min: {mem_min:.1f}% | Max: {mem_max:.1f}%)
 Used: {current.memory_used_gb:.1f}GB / {current.memory_total_gb:.1f}GB
 
-GPU: {current.gpu_load:5.1f}%
-VRAM: {current.gpu_memory_percent:5.1f}%
+GPU: {current.gpu_load:5.1f}%    (Min: {gpu_min:.1f}% | Max: {gpu_max:.1f}%)
+VRAM: {current.gpu_memory_percent:5.1f}%    (Min: {vram_min:.1f}% | Max: {vram_max:.1f}%)
 VRAM Used: {current.gpu_memory_used_gb:.1f}GB / {current.gpu_memory_total_gb:.1f}GB
-{"GPU Temp: " + f"{current.gpu_temp:.1f}°C" if current.gpu_temp else ""}
 
-DATA POINTS: {len(self.snapshots)}
+WINDOW: Last {self.time_window_seconds} seconds
+DATA POINTS: {len(self.snapshots)} total ({len(window_snapshots)} in window)
 MONITORING TIME: {(time.time() - self.start_time):.1f}s
                 """
                 
                 self.ax_stats.text(0.05, 0.95, stats_text, transform=self.ax_stats.transAxes,
-                                  fontsize=10, verticalalignment='top', fontfamily='monospace',
-                                  bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
+                                  fontsize=9, verticalalignment='top', fontfamily='monospace',
+                                  bbox=dict(boxstyle='round,pad=0.5', facecolor='lightblue', alpha=0.9, edgecolor='navy'))
             
-            plt.tight_layout()
-            self.canvas.draw()
+            # Draw the canvas once at the end
+            self.canvas.draw_idle()  # Use draw_idle for better performance
             
         except Exception as e:
             print(f"Plot update error: {e}")
@@ -855,29 +1048,43 @@ MONITORING TIME: {(time.time() - self.start_time):.1f}s
                 writer = csv.writer(f)
                 writer.writerow([
                     'timestamp', 'cpu_percent', 'memory_percent', 'memory_used_gb',
-                    'gpu_load', 'gpu_memory_percent', 'gpu_memory_used_gb',
-                    'cpu_temp', 'gpu_temp'
+                    'gpu_load', 'gpu_memory_percent', 'gpu_memory_used_gb'
                 ])
         except Exception as e:
             messagebox.showerror("Error", f"Failed to initialize log file: {e}")
             self.log_file = None
     
     def _log_snapshot(self, snapshot: SystemSnapshot):
-        """Log snapshot to file."""
+        """Log snapshot to file with error handling."""
+        if not self.log_file or not snapshot:
+            return
+            
         try:
-            with open(self.log_file, 'a', newline='') as f:
+            # Use buffered writing to prevent I/O issues during shutdown
+            log_data = [
+                datetime.fromtimestamp(snapshot.timestamp).strftime('%Y-%m-%d %H:%M:%S'),
+                snapshot.cpu_percent,
+                snapshot.memory_percent,
+                snapshot.memory_used_gb,
+                snapshot.gpu_load,
+                snapshot.gpu_memory_percent,
+                snapshot.gpu_memory_used_gb
+            ]
+            
+            # Write with error handling and immediate flush
+            with open(self.log_file, 'a', newline='', buffering=1) as f:
                 writer = csv.writer(f)
-                writer.writerow([
-                    datetime.fromtimestamp(snapshot.timestamp).strftime('%Y-%m-%d %H:%M:%S'),
-                    snapshot.cpu_percent,
-                    snapshot.memory_percent,
-                    snapshot.memory_used_gb,
-                    snapshot.gpu_load,
-                    snapshot.gpu_memory_percent,
-                    snapshot.gpu_memory_used_gb,
-                    snapshot.cpu_temp or '',
-                    snapshot.gpu_temp or ''
-                ])
+                writer.writerow(log_data)
+                f.flush()  # Ensure data is written immediately
+                
+        except (OSError, IOError, PermissionError) as e:
+            # Don't print errors during shutdown to avoid stdout deadlock
+            if not self.cleanup_called:
+                print(f"⚠️  Logging error: {e}")
+        except Exception as e:
+            # Catch any other exceptions to prevent crashes
+            if not self.cleanup_called:
+                print(f"⚠️  Unexpected logging error: {e}")
         except Exception as e:
             print(f"Log error: {e}")
     
@@ -963,35 +1170,54 @@ GPU: {max_gpu:.1f}%    VRAM: {max_vram:.1f}%
         print("🧹 Starting comprehensive cleanup...")
         
         try:
-            # Stop monitoring
+            # Stop monitoring first
             self.running = False
             
-            # Stop animation safely
+            # Close log file immediately to prevent I/O issues
+            if hasattr(self, 'log_file') and self.log_file:
+                try:
+                    # Ensure any pending writes are completed
+                    import sys
+                    sys.stdout.flush()
+                    sys.stderr.flush()
+                except:
+                    pass
+            
+            # Stop animation safely with shorter timeout
             if hasattr(self, 'ani') and self.ani is not None:
                 try:
                     self.ani.event_source.stop()
                     self.ani = None
+                    self._animation_ref = None  # Clear reference
                     print("✅ Animation stopped")
                 except Exception as e:
-                    print(f"⚠️  Animation cleanup warning: {e}")
+                    if not self.cleanup_called:
+                        print(f"⚠️  Animation cleanup warning: {e}")
             
             # Clean up matplotlib figures aggressively
             try:
                 if hasattr(self, 'fig'):
                     plt.close(self.fig)
                 plt.close('all')  # Close any remaining figures
+                # Clear matplotlib state
+                import matplotlib
+                matplotlib.pyplot.clf()
                 print("✅ Matplotlib figures closed")
             except Exception as e:
-                print(f"⚠️  Figure cleanup warning: {e}")
+                if not self.cleanup_called:
+                    print(f"⚠️  Figure cleanup warning: {e}")
             
             # Terminate surround view process
             self._terminate_surround_process()
             
-            # Wait for monitor thread to finish with shorter timeout
+            # Wait for monitor thread to finish with very short timeout
             if hasattr(self, 'monitor_thread') and self.monitor_thread is not None:
                 try:
-                    self.monitor_thread.join(timeout=1.0)  # Shorter timeout
-                    print("✅ Monitor thread joined")
+                    if self.monitor_thread != threading.current_thread():
+                        self.monitor_thread.join(timeout=0.5)  # Very short timeout
+                        print("✅ Monitor thread joined")
+                    else:
+                        print("⚠️  Skipping thread join (current thread)")
                 except Exception as e:
                     print(f"⚠️  Thread cleanup warning: {e}")
             
@@ -1000,7 +1226,7 @@ GPU: {max_gpu:.1f}%    VRAM: {max_vram:.1f}%
                 if hasattr(self, 'root') and self.root is not None:
                     # Force quit without mainloop hang
                     self.root.quit()
-                    self.root.update()  # Process any pending events
+                    self.root.update_idletasks()  # Process any pending events quickly
                     print("✅ GUI quit called")
             except Exception as e:
                 print(f"⚠️  GUI cleanup warning: {e}")
@@ -1091,13 +1317,14 @@ This will open a configuration GUI where you can:
 
 
 def main() -> int:
-    """Main function."""
+    """Main function with proper cleanup."""
     args = parse_arguments()
     
     print("🔍 360° Surround View - GUI System Profiler")
     print("=" * 50)
     print("Opening configuration window...")
     
+    config_gui = None
     try:
         # Start configuration GUI
         config_gui = ProfilerConfigGUI()
@@ -1105,10 +1332,40 @@ def main() -> int:
         
     except KeyboardInterrupt:
         print("\n🛑 Profiler interrupted by user")
+        if config_gui:
+            try:
+                config_gui._cleanup()
+            except:
+                pass
         return 0
     except Exception as e:
         print(f"❌ Profiler error: {e}")
+        if config_gui:
+            try:
+                config_gui._cleanup()
+            except:
+                pass
         return 1
+    finally:
+        # Force cleanup of any remaining resources
+        try:
+            import matplotlib.pyplot as plt
+            plt.close('all')
+            
+            # Force garbage collection
+            import gc
+            gc.collect()
+            
+            # Flush all output streams to prevent buffered I/O deadlock
+            import sys
+            try:
+                sys.stdout.flush()
+                sys.stderr.flush()
+            except:
+                pass
+                
+        except:
+            pass
     
     print("✅ Profiler completed successfully")
     return 0
